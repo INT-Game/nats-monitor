@@ -1,0 +1,14 @@
+{
+  "listen_addr": "0.0.0.0:18222",
+  "nats_monitor_url": "http://127.0.0.1:8222",
+  "nats_monitor_targets": [
+    { "name": "本机 NATS", "url": "http://127.0.0.1:8222" }
+  ],
+  "refresh_interval": "5s",
+  "auth": {
+    "username": "admin",
+    "password": "NWsieNmSAR1gjELuh7FcvI61",
+    "session_ttl": "12h",
+    "secure_cookie": false
+  }
+}

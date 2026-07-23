@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>NATS Monitor</title>
+  <link rel="icon" href="/assets/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+      <div class="brand-copy">
+        <strong>NATS Monitor</strong>
+        <button id="targetButton" class="target-button" type="button" title="切换 NATS 监控地址">
+          <span id="targetLabel" class="target-label">正在连接监控端点</span>
+          <span class="target-action">切换</span>
+        </button>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <div id="healthBadge" class="health-badge is-loading" role="status">
+        <span class="status-dot"></span><span id="healthText">检查中</span>
+      </div>
+      <label class="refresh-control">
+        <span>页面刷新</span>
+        <select id="refreshInterval" aria-label="页面刷新间隔">
+          <option value="2000">2 秒</option>
+          <option value="5000" selected>5 秒</option>
+          <option value="10000">10 秒</option>
+          <option value="30000">30 秒</option>
+          <option value="0">暂停</option>
+        </select>
+      </label>
+      <button id="refreshButton" class="button" type="button">立即刷新</button>
+      <span id="viewerName" class="viewer-name">--</span>
+      <form action="/logout" method="post"><button class="button button-quiet" type="submit">退出</button></form>
+    </div>
+  </header>
+
+  <main>
+    <nav class="tabs" aria-label="监控页面">
+      <button class="tab is-active" type="button" data-view="overview" aria-selected="true">总览</button>
+      <button class="tab" type="button" data-view="connections" aria-selected="false">连接</button>
+      <button class="tab" type="button" data-view="slowconsumers" aria-selected="false">慢消费者</button>
+      <button class="tab" type="button" data-view="subjects" aria-selected="false">Subjects</button>
+      <button class="tab" type="button" data-view="accounts" aria-selected="false">账号</button>
+      <button class="tab" type="button" data-view="topology" aria-selected="false">拓扑</button>
+      <button class="tab" type="button" data-view="jetstream" aria-selected="false">JetStream</button>
+    </nav>
+
+    <div id="errorBanner" class="error-banner" role="alert" hidden>
+      <div><strong>无法获取最新数据</strong><span id="errorText"></span></div>
+      <button id="retryButton" class="button button-danger" type="button">重试</button>
+    </div>
+
+    <section id="overviewView" class="view is-active" aria-labelledby="overviewTitle">
+      <div class="section-heading">
+        <div><p class="eyebrow">实时状态</p><h1 id="overviewTitle">运行总览</h1></div>
+        <p id="lastUpdated" class="last-updated">尚无成功采样</p>
+      </div>
+
+      <div class="metrics" aria-label="关键指标">
+        <article class="metric"><span>活跃连接</span><strong id="metricConnections">--</strong><small id="metricConnectionsMeta">累计 --</small></article>
+        <article class="metric"><span>消息速率</span><strong id="metricMessages">--</strong><small>收发合计</small></article>
+        <article class="metric"><span>网络吞吐</span><strong id="metricBytes">--</strong><small>入站与出站</small></article>
+        <article class="metric"><span>订阅数量</span><strong id="metricSubscriptions">--</strong><small id="metricFanout">平均扇出 --</small></article>
+        <article class="metric"><span>慢消费者累计</span><strong id="metricSlowConsumers">--</strong><small id="metricSlowState">等待采样</small></article>
+      </div>
+
+      <div class="dashboard-grid">
+        <section class="panel chart-panel" aria-labelledby="trafficTitle">
+          <div class="panel-heading">
+            <div><p class="eyebrow">最近 60 分钟</p><h2 id="trafficTitle">消息与吞吐趋势</h2></div>
+            <div class="legend" aria-label="图例"><span><i class="legend-messages"></i>消息/秒</span><span><i class="legend-bytes"></i>吞吐</span></div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="trafficChart" role="img" aria-label="消息速率与网络吞吐趋势图"></canvas>
+            <div id="chartEmpty" class="chart-empty">等待第二次采样以生成趋势</div>
+          </div>
+        </section>
+
+        <aside class="panel status-panel" aria-labelledby="statusTitle">
+          <div class="panel-heading"><div><p class="eyebrow">服务状态</p><h2 id="statusTitle">健康检查</h2></div></div>
+          <dl class="status-list">
+            <div><dt>NATS 服务</dt><dd id="statusServer"><span class="mini-dot"></span>检查中</dd></div>
+            <div><dt>监控数据</dt><dd id="statusData"><span class="mini-dot"></span>等待采样</dd></div>
+            <div><dt>拓扑连接</dt><dd id="statusTopology"><span class="mini-dot"></span>--</dd></div>
+            <div><dt>当前积压</dt><dd id="statusSlow"><span class="mini-dot"></span>--</dd></div>
+          </dl>
+          <div class="server-meta">
+            <div><span>版本</span><strong id="serverVersion">--</strong></div>
+            <div><span>运行时间</span><strong id="serverUptime">--</strong></div>
+            <div><span>CPU</span><strong id="serverCPU">--</strong></div>
+            <div><span>内存</span><strong id="serverMemory">--</strong></div>
+          </div>
+        </aside>
+      </div>
+
+      <section class="panel server-details-panel" aria-labelledby="serverDetailsTitle">
+        <div class="panel-heading"><div><p class="eyebrow">运行实例</p><h2 id="serverDetailsTitle">Server 信息</h2></div></div>
+        <div class="detail-grid server-details">
+          <article><span>Server Name</span><strong id="detailServerName">--</strong></article>
+          <article><span>Server ID</span><strong id="detailServerID">--</strong></article>
+          <article><span>监听地址</span><strong id="detailServerBind">--</strong></article>
+          <article><span>Go Runtime</span><strong id="detailGoRuntime">--</strong></article>
+          <article><span>CPU / GOMAXPROCS</span><strong id="detailCores">--</strong></article>
+          <article><span>最大连接</span><strong id="detailMaxConnections">--</strong></article>
+          <article><span>最大 Payload</span><strong id="detailMaxPayload">--</strong></article>
+          <article><span>NATS 客户端认证</span><strong id="detailAuthRequired">--</strong></article>
+        </div>
+      </section>
+
+      <section class="panel warning-panel" aria-labelledby="warningTitle">
+        <div class="panel-heading">
+          <div><p class="eyebrow">需要关注</p><h2 id="warningTitle">当前异常</h2></div>
+          <span id="warningCount" class="count-badge">0</span>
+        </div>
+        <div id="warningList" class="warning-list"><p class="empty-state">暂无异常</p></div>
+      </section>
+    </section>
+
+    <section id="connectionsView" class="view" aria-labelledby="connectionsTitle" hidden>
+      <div class="section-heading table-heading">
+        <div><p class="eyebrow">客户端</p><h1 id="connectionsTitle">连接明细</h1></div>
+        <label class="search-field"><span class="sr-only">搜索连接</span><input id="connectionSearch" type="search" placeholder="搜索名称、IP、账号、语言"></label>
+      </div>
+      <div class="table-shell">
+        <table>
+          <thead><tr><th>客户端</th><th>地址</th><th>账号 / 用户</th><th>客户端</th><th>订阅</th><th>Pending</th><th>入站</th><th>出站</th><th>RTT</th><th>运行时间</th></tr></thead>
+          <tbody id="connectionsBody"></tbody>
+        </table>
+        <p id="connectionsEmpty" class="empty-state">暂无连接</p>
+      </div>
+    </section>
+
+    <section id="slowconsumersView" class="view" aria-labelledby="slowConsumersTitle" hidden>
+      <div class="section-heading">
+        <div><p class="eyebrow">消费诊断</p><h1 id="slowConsumersTitle">慢消费者明细</h1></div>
+        <p id="slowScanMeta" class="last-updated">等待采样</p>
+      </div>
+      <div class="detail-grid slow-consumer-stats">
+        <article><span>累计事件</span><strong id="slowTotal">--</strong></article>
+        <article><span>Client</span><strong id="slowClients">--</strong></article>
+        <article><span>Route</span><strong id="slowRoutes">--</strong></article>
+        <article><span>Gateway</span><strong id="slowGateways">--</strong></article>
+        <article><span>Leaf Node</span><strong id="slowLeafs">--</strong></article>
+        <article><span>当前 Pending &gt; 0</span><strong id="slowPending">--</strong></article>
+      </div>
+
+      <div class="subsection-heading"><h2>当前积压连接</h2><span class="state-label">风险信号，非已确认</span></div>
+      <div class="table-shell">
+        <table><thead><tr><th>客户端</th><th>地址</th><th>账号 / 用户</th><th>Pending</th><th>Subjects</th><th>订阅</th><th>出站</th><th>RTT</th><th>运行时间</th></tr></thead><tbody id="slowPendingBody"></tbody></table>
+        <p id="slowPendingEmpty" class="empty-state">当前没有待发送积压</p>
+      </div>
+
+      <div class="subsection-heading"><h2>最近确认记录</h2><span class="state-label">服务器断开原因</span></div>
+      <div class="table-shell">
+        <table><thead><tr><th>断开时间</th><th>客户端</th><th>地址</th><th>账号 / 用户</th><th>原因</th><th>Pending</th><th>出站</th><th>订阅</th><th>运行时间</th></tr></thead><tbody id="slowRecentBody"></tbody></table>
+        <p id="slowRecentEmpty" class="empty-state">最近关闭连接中没有慢消费者记录</p>
+      </div>
+    </section>
+
+    <section id="subjectsView" class="view" aria-labelledby="subjectsTitle" hidden>
+      <div class="section-heading table-heading">
+        <div><p class="eyebrow">订阅路由表</p><h1 id="subjectsTitle">Subject 明细</h1></div>
+        <div class="filter-row">
+          <label class="search-field"><span class="sr-only">搜索 Subject</span><input id="subjectSearch" type="search" placeholder="搜索 Subject、Queue、CID"></label>
+          <label><span class="sr-only">筛选 Subject 类型</span><select id="subjectType" aria-label="筛选 Subject 类型"><option value="">全部类型</option><option value="custom">业务 Subject</option><option value="inbox">临时 Inbox</option><option value="system">系统内部</option></select></label>
+          <label><span class="sr-only">筛选账号</span><select id="subjectAccount" aria-label="筛选账号"><option value="">全部账号</option></select></label>
+        </div>
+      </div>
+      <div class="detail-grid subject-stats">
+        <article><span>当前订阅</span><strong id="subsCurrent">--</strong></article>
+        <article><span>已加载明细</span><strong id="subsLoaded">--</strong></article>
+        <article><span class="label-with-help">Queue Groups <button id="queueHelpButton" class="help-button" type="button" aria-label="了解 Queue Group">?</button></span><strong id="subsQueues">--</strong></article>
+        <article><span>缓存命中率</span><strong id="subsHitRate">--</strong></article>
+        <article><span>匹配次数</span><strong id="subsMatches">--</strong></article>
+        <article><span class="label-with-help">平均 / 最大扇出 <button id="fanoutHelpButton" class="help-button" type="button" aria-label="了解订阅扇出">?</button></span><strong id="subsFanout">--</strong></article>
+      </div>
+      <p id="subjectResultMeta" class="result-meta">--</p>
+      <div class="table-shell">
+        <table>
+          <thead><tr><th>Subject</th><th>类型</th><th>Account</th><th>Queue Group</th><th>CID</th><th>SID</th><th>已投递</th><th>最大消息</th></tr></thead>
+          <tbody id="subjectsBody"></tbody>
+        </table>
+        <p id="subjectsEmpty" class="empty-state">暂无 Subject</p>
+      </div>
+    </section>
+
+    <section id="accountsView" class="view" aria-labelledby="accountsTitle" hidden>
+      <div class="section-heading"><div><p class="eyebrow">多租户</p><h1 id="accountsTitle">账号统计</h1></div><p id="systemAccount" class="last-updated">系统账号 --</p></div>
+      <div class="table-shell">
+        <table>
+          <thead><tr><th>Account</th><th>当前连接</th><th>累计连接</th><th>订阅</th><th>发送消息</th><th>发送流量</th><th>接收消息</th><th>接收流量</th><th>Leaf</th><th>慢消费者</th></tr></thead>
+          <tbody id="accountsBody"></tbody>
+        </table>
+        <p id="accountsEmpty" class="empty-state">暂无账号统计</p>
+      </div>
+    </section>
+
+    <section id="topologyView" class="view" aria-labelledby="topologyTitle" hidden>
+      <div class="section-heading"><div><p class="eyebrow">节点互联</p><h1 id="topologyTitle">拓扑连接</h1></div></div>
+      <div class="detail-grid topology-stats">
+        <article><span>Routes</span><strong id="topologyRoutes">--</strong></article>
+        <article><span>Outbound Gateways</span><strong id="topologyOutbound">--</strong></article>
+        <article><span>Inbound Gateways</span><strong id="topologyInbound">--</strong></article>
+        <article><span>Leaf Nodes</span><strong id="topologyLeafs">--</strong></article>
+      </div>
+
+      <div class="subsection-heading"><h2>Route 连接</h2></div>
+      <div class="table-shell">
+        <table><thead><tr><th>远端节点</th><th>地址</th><th>配置方式</th><th>订阅</th><th>Pending</th><th>入站</th><th>出站</th><th>RTT</th><th>运行时间</th></tr></thead><tbody id="routesBody"></tbody></table>
+        <p id="routesEmpty" class="empty-state">当前没有 Route 连接</p>
+      </div>
+
+      <div class="subsection-heading"><h2>Gateway 连接</h2></div>
+      <div class="table-shell">
+        <table><thead><tr><th>方向</th><th>远端集群</th><th>远端节点</th><th>地址</th><th>订阅</th><th>入站</th><th>出站</th><th>运行时间</th></tr></thead><tbody id="gatewaysBody"></tbody></table>
+        <p id="gatewaysEmpty" class="empty-state">当前没有 Gateway 连接</p>
+      </div>
+
+      <div class="subsection-heading"><h2>Leaf Node 连接</h2></div>
+      <div class="table-shell">
+        <table><thead><tr><th>节点</th><th>地址</th><th>Account</th><th>模式</th><th>订阅</th><th>入站</th><th>出站</th><th>RTT</th><th>压缩</th></tr></thead><tbody id="leafsBody"></tbody></table>
+        <p id="leafsEmpty" class="empty-state">当前没有 Leaf Node 连接</p>
+      </div>
+    </section>
+
+    <section id="jetstreamView" class="view" aria-labelledby="jetstreamTitle" hidden>
+      <div class="section-heading"><div><p class="eyebrow">持久化能力</p><h1 id="jetstreamTitle">JetStream</h1></div><span id="jetstreamState" class="state-label">检查中</span></div>
+      <div id="jetstreamDisabled" class="notice-band" hidden>当前 NATS Server 未启用 JetStream。</div>
+      <div class="detail-grid jetstream-stats">
+        <article><span>Streams</span><strong id="jsStreams">--</strong></article>
+        <article><span>Consumers</span><strong id="jsConsumers">--</strong></article>
+        <article><span>Messages</span><strong id="jsMessages">--</strong></article>
+        <article><span>Stored Bytes</span><strong id="jsBytes">--</strong></article>
+        <article><span>Memory / Storage</span><strong id="jsUsage">--</strong></article>
+        <article><span>API Errors / Total</span><strong id="jsAPI">--</strong></article>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="targetDialog" class="dialog-shell" aria-labelledby="targetDialogTitle">
+    <form id="targetForm" class="dialog-panel">
+      <div class="dialog-heading">
+        <div><p class="eyebrow">监控目标</p><h2 id="targetDialogTitle">切换 NATS 服务</h2></div>
+        <button id="targetCloseButton" class="icon-button" type="button" aria-label="关闭">×</button>
+      </div>
+      <span id="targetPresetFieldLabel" class="dialog-field">配置地址</span>
+      <div id="targetPreset" class="target-picker">
+        <button id="targetPresetButton" class="dialog-input target-picker-button" type="button" aria-labelledby="targetPresetFieldLabel targetPresetLabel" aria-haspopup="listbox" aria-expanded="false">
+          <span id="targetPresetLabel">临时输入</span>
+        </button>
+        <div id="targetPresetList" class="target-picker-list" role="listbox" aria-labelledby="targetPresetFieldLabel" hidden></div>
+      </div>
+      <label class="dialog-field dialog-field-spaced" for="targetInput">NATS Monitoring 地址</label>
+      <input id="targetInput" class="dialog-input" name="target" type="text" inputmode="url" autocomplete="off" placeholder="http://10.0.0.12:8222" required>
+      <p class="dialog-hint">支持内网或公网 HTTP(S) 地址；未填写端口时默认使用 8222。</p>
+      <p id="targetError" class="dialog-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button id="targetCancelButton" class="button button-quiet" type="button">取消</button>
+        <button id="targetSubmitButton" class="button button-primary" type="submit">连接并切换</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="queueHelpDialog" class="dialog-shell" aria-labelledby="queueHelpTitle">
+    <div class="dialog-panel">
+      <div class="dialog-heading">
+        <div><p class="eyebrow">负载均衡</p><h2 id="queueHelpTitle">Queue Group</h2></div>
+        <button id="queueHelpCloseButton" class="icon-button" type="button" aria-label="关闭">×</button>
+      </div>
+      <p class="dialog-copy">同一 Subject、同一 Queue Group 的多个订阅者组成工作组。每条消息只会交给组内一个订阅者处理，用于多实例间分摊任务。</p>
+      <p class="dialog-copy">不同 Queue Group 会各收到一份消息；普通订阅者也会各自收到一份。Core NATS 不提供持久化和重试，需要可靠消费时应使用 JetStream Consumer。</p>
+      <div class="dialog-actions"><button id="queueHelpDoneButton" class="button button-primary" type="button">知道了</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="fanoutHelpDialog" class="dialog-shell" aria-labelledby="fanoutHelpTitle">
+    <div class="dialog-panel">
+      <div class="dialog-heading">
+        <div><p class="eyebrow">订阅路由</p><h2 id="fanoutHelpTitle">平均 / 最大扇出</h2></div>
+        <button id="fanoutHelpCloseButton" class="icon-button" type="button" aria-label="关闭">×</button>
+      </div>
+      <p class="dialog-copy">扇出表示一个具体发布 Subject 在订阅路由缓存中匹配到多少个投递目标：普通订阅各算一个，同名 Queue Group 整组算一个。</p>
+      <p class="dialog-copy">平均值是所有缓存条目的平均匹配目标数，最大值是单个条目中的最高值。数值越高，单次发布可能复制到的目标越多；它不是消息速率，缓存淘汰时也可能有轻微偏差。</p>
+      <div class="dialog-actions"><button id="fanoutHelpDoneButton" class="button button-primary" type="button">知道了</button></div>
+    </div>
+  </dialog>
+
+  <script src="/assets/app.js" type="module"></script>
+</body>
+</html>
